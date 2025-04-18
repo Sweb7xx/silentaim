@@ -1,97 +1,123 @@
--- Silent Aim for Rivals with GUI & Toggle
-getgenv().SilentAimEnabled = true
-getgenv().SilentAimFOV = 120
+-- // Rivals Silent Aim Script with Linoria UI
+
+local SilentAim = {
+    Enabled = true,
+    TeamCheck = true,
+    VisibleCheck = true,
+    Prediction = 0.13,
+    HitChance = 100,
+    SelectedPart = "Head",
+}
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
+local Camera = Workspace.CurrentCamera
 
--- GUI Setup
-local ScreenGui = Instance.new("ScreenGui", game.CoreGui)
-ScreenGui.Name = "SilentAimGUI"
+local function IsOnScreen(part)
+    local screenPos, onScreen = Camera:WorldToViewportPoint(part.Position)
+    return onScreen
+end
 
-local statusLabel = Instance.new("TextLabel", ScreenGui)
-statusLabel.Position = UDim2.new(0, 10, 0, 10)
-statusLabel.Size = UDim2.new(0, 200, 0, 30)
-statusLabel.BackgroundTransparency = 1
-statusLabel.TextColor3 = Color3.new(1, 1, 1)
-statusLabel.TextStrokeTransparency = 0
-statusLabel.Font = Enum.Font.SourceSansBold
-statusLabel.TextSize = 20
-statusLabel.Text = "Silent Aim: ON"
+local function IsVisible(part)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Blacklist
+    params.FilterDescendantsInstances = {LocalPlayer.Character, Camera}
+    local result = Workspace:Raycast(Camera.CFrame.Position, (part.Position - Camera.CFrame.Position).Unit * 500, params)
+    return result == nil or result.Instance:IsDescendantOf(part.Parent)
+end
 
--- FOV Circle
-local fovCircle = Drawing.new("Circle")
-fovCircle.Radius = getgenv().SilentAimFOV
-fovCircle.Thickness = 1.5
-fovCircle.Color = Color3.fromRGB(0, 255, 0)
-fovCircle.Transparency = 0.4
-fovCircle.Filled = false
-
--- Toggle Keybind
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if input.KeyCode == Enum.KeyCode.RightShift then
-        getgenv().SilentAimEnabled = not getgenv().SilentAimEnabled
-        statusLabel.Text = "Silent Aim: " .. (getgenv().SilentAimEnabled and "ON" or "OFF")
-        statusLabel.TextColor3 = getgenv().SilentAimEnabled and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
-    end
-end)
-
--- Update FOV circle
-RunService.RenderStepped:Connect(function()
-    local mouseLocation = UserInputService:GetMouseLocation()
-    fovCircle.Position = Vector2.new(mouseLocation.X, mouseLocation.Y)
-    fovCircle.Visible = getgenv().SilentAimEnabled
-end)
-
--- Target selector
-local function getClosestEnemy()
-    local closestPlayer = nil
-    local shortestDistance = getgenv().SilentAimFOV
-    local mouse = LocalPlayer:GetMouse()
-
-    for _, player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Team ~= LocalPlayer.Team and player.Character then
-            local head = player.Character:FindFirstChild("Head")
-            if head then
-                local screenPos, onScreen = Camera:WorldToScreenPoint(head.Position)
-                if onScreen then
-                    local distance = (Vector2.new(mouse.X, mouse.Y) - Vector2.new(screenPos.X, screenPos.Y)).Magnitude
-                    if distance < shortestDistance then
-                        shortestDistance = distance
-                        closestPlayer = player
-                    end
-                end
+local function GetClosestPlayer()
+    local closest, distance = nil, math.huge
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild(SilentAim.SelectedPart) then
+            if SilentAim.TeamCheck and player.Team == LocalPlayer.Team then continue end
+            local part = player.Character[SilentAim.SelectedPart]
+            if SilentAim.VisibleCheck and not IsVisible(part) then continue end
+            local screenPos, onScreen = Camera:WorldToViewportPoint(part.Position)
+            if not onScreen then continue end
+            local mousePos = Vector2.new(UserInputService:GetMouseLocation().X, UserInputService:GetMouseLocation().Y)
+            local dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+            if dist < distance then
+                closest = part
+                distance = dist
             end
         end
     end
-
-    return closestPlayer
+    return closest
 end
 
--- Metatable hook
-local mt = getrawmetatable(game)
-setreadonly(mt, false)
-local oldNamecall = mt.__namecall
+local function ApplySilentAim()
+    local target = GetClosestPlayer()
+    if not target then return nil end
 
-mt.__namecall = newcclosure(function(self, ...)
+    local prediction = (target.Velocity or Vector3.zero) * SilentAim.Prediction
+    return target.Position + prediction
+end
+
+-- Hook
+local oldNamecall
+oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
     local args = {...}
     local method = getnamecallmethod()
 
-    if SilentAimEnabled and method == "FindPartOnRayWithIgnoreList" and tostring(self) == "Workspace" then
-        local target = getClosestEnemy()
-        if target and target.Character then
-            local head = target.Character:FindFirstChild("Head")
-            if head then
-                local origin = args[1].Origin
-                local direction = (head.Position - origin).Unit * 1000
-                args[1] = Ray.new(origin, direction)
-                return oldNamecall(self, unpack(args))
-            end
+    if tostring(self) == "Hit" and method == "FireServer" and SilentAim.Enabled and math.random(0, 100) <= SilentAim.HitChance then
+        local targetPos = ApplySilentAim()
+        if targetPos then
+            args[1] = targetPos
+            return oldNamecall(self, unpack(args))
         end
     end
 
     return oldNamecall(self, ...)
 end)
+
+-- Linoria UI Setup
+local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/Library.lua"))()
+local Window = Library:CreateWindow({ Title = "Rivals | Silent Aim", Center = true, AutoShow = true })
+local Tabs = {
+    Main = Window:AddTab("Main"),
+    Settings = Window:AddTab("Settings")
+}
+
+Tabs.Main:AddToggle("SilentAimEnabled", { Text = "Enable Silent Aim", Default = SilentAim.Enabled })
+    :OnChanged(function(val) SilentAim.Enabled = val end)
+
+Tabs.Main:AddSlider("HitChance", {
+    Text = "Hit Chance",
+    Min = 0,
+    Max = 100,
+    Default = SilentAim.HitChance,
+    Rounding = 0
+}):OnChanged(function(val) SilentAim.HitChance = val end)
+
+Tabs.Main:AddSlider("Prediction", {
+    Text = "Prediction",
+    Min = 0,
+    Max = 0.25,
+    Default = SilentAim.Prediction,
+    Rounding = 3
+}):OnChanged(function(val) SilentAim.Prediction = val end)
+
+Tabs.Main:AddDropdown("Part", {
+    Values = { "Head", "UpperTorso", "LowerTorso" },
+    Default = SilentAim.SelectedPart,
+    Multi = false,
+    Text = "Target Part"
+}):OnChanged(function(val) SilentAim.SelectedPart = val end)
+
+Tabs.Settings:AddToggle("TeamCheck", { Text = "Team Check", Default = SilentAim.TeamCheck })
+    :OnChanged(function(val) SilentAim.TeamCheck = val end)
+
+Tabs.Settings:AddToggle("VisibleCheck", { Text = "Visible Check", Default = SilentAim.VisibleCheck })
+    :OnChanged(function(val) SilentAim.VisibleCheck = val end)
+
+Library:SetWatermark("Rivals Silent Aim | by You")
+Library:Notify("Silent Aim Loaded!")
+
+-- Save config
+local Configs = Window:AddTab("Configs")
+Library.SaveManager:SetLibrary(Library)
+Library.SaveManager:BuildConfigSection(Configs)
+
